@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pydantic
+apscheduler
+openai
+python-dotenv
+httpx
