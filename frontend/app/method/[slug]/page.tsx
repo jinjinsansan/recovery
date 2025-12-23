@@ -107,7 +107,7 @@ export default async function MethodDetailPage({
             ) : (
               events.map((event: any) => {
                 const post = event.raw_posts;
-                const labelColors = {
+                const labelColors: Record<string, string> = {
                   positive: 'bg-green-100 text-green-800',
                   negative: 'bg-red-100 text-red-800',
                   neutral: 'bg-gray-100 text-gray-800',
@@ -120,7 +120,7 @@ export default async function MethodDetailPage({
                       <div className="flex-shrink-0">
                         <span
                           className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${
-                            labelColors[event.effect_label]
+                            labelColors[event.effect_label] || labelColors.unknown
                           }`}
                         >
                           {event.effect_label === 'positive' && '✓ 改善'}
