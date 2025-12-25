@@ -32,6 +32,7 @@ class SupabaseClient:
         for chunk in _chunk(records, size=500):
             resp = self._client.post(
                 f"{self.rest_url}/raw_posts",
+                params={"on_conflict": "platform_id"},
                 headers=self._headers(prefer="resolution=ignore-duplicates"),
                 json=chunk,
             )

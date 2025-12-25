@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-import json
-import re
 from datetime import datetime, timezone
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional, Sequence
 from urllib.parse import quote
 
 import httpx
-import quickjs
 
 from .twitter_search import CollectedPost
-
-NUXT_PATTERN = re.compile(r"window.__NUXT__=(.*?);\s*</script>", re.S)
 
 
 class NoteCollectorError(RuntimeError):
@@ -24,6 +19,7 @@ class NoteHashtagCollector:
     """Scrape note hashtag pages rendered by Nuxt."""
 
     BASE_URL = "https://note.com"
+    API_BASE = f"{BASE_URL}/api/v3"
 
     def __init__(
         self,
@@ -41,52 +37,49 @@ class NoteHashtagCollector:
     def collect(self, tags: Sequence[str]) -> List[CollectedPost]:
         dataset: List[CollectedPost] = []
         for tag in tags:
-            notes = self._fetch_tag_notes(tag)
-            for entry in notes:
-                post = self._to_collected(tag, entry)
-                if post:
-                    dataset.append(post)
-                if len(dataset) >= self.max_results:
+            tag_records: List[CollectedPost] = []
+            page = 1
+            while len(tag_records) < self.max_results:
+                notes, next_page = self._fetch_tag_notes(tag, page)
+                if not notes:
                     break
-            if len(dataset) >= self.max_results:
-                break
-        return dataset[: self.max_results]
+                for entry in notes:
+                    if len(tag_records) >= self.max_results:
+                        break
+                    post = self._to_collected(tag, entry)
+                    if post:
+                        tag_records.append(post)
+                if not next_page or next_page == page:
+                    break
+                page = next_page
+            dataset.extend(tag_records)
+        return dataset
 
-    def _fetch_tag_notes(self, tag: str) -> Iterable[dict]:
-        encoded = quote(tag.strip("#"))
-        url = f"{self.BASE_URL}/hashtag/{encoded}"
+    def _fetch_tag_notes(self, tag: str, page: int) -> tuple[List[dict], Optional[int]]:
+        slug = quote(tag.lstrip("#"))
+        params = {
+            "order": "new",
+            "page": page,
+            "paid_only": "false",
+        }
         headers = {
             "User-Agent": self.user_agent,
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "ja,en;q=0.9",
-            "Referer": self.BASE_URL,
+            "Accept": "application/json",
+            "Referer": f"{self.BASE_URL}/hashtag/{slug}",
         }
-        resp = self._client.get(url, headers=headers)
+        resp = self._client.get(
+            f"{self.API_BASE}/hashtags/{slug}/notes",
+            params=params,
+            headers=headers,
+        )
         if resp.status_code != 200:
             raise NoteCollectorError(
-                f"Failed to fetch note hashtag '{tag}' (status {resp.status_code})"
+                f"Failed to fetch note hashtag '{tag}' page {page} (status {resp.status_code})"
             )
-        match = NUXT_PATTERN.search(resp.text)
-        if not match:
-            raise NoteCollectorError("Failed to locate window.__NUXT__ state in response")
-        script = match.group(1)
-        try:
-            ctx = quickjs.Context()
-            ctx.eval("var window = {};")
-            ctx.eval("window.__NUXT__=" + script + ";")
-            raw_json = ctx.eval("JSON.stringify(window.__NUXT__)")
-            data = json.loads(raw_json)
-        except Exception as exc:  # pragma: no cover
-            raise NoteCollectorError(f"Failed to evaluate Nuxt payload: {exc}") from exc
-
-        notes = (
-            data.get("state", {})
-            .get("hashtagTimeline", {})
-            .get("notes", [])
-        )
-        if not notes:
-            raise NoteCollectorError("No notes returned from hashtag timeline")
-        return notes
+        payload = resp.json().get("data") or {}
+        notes = payload.get("notes", [])
+        next_page = payload.get("next_page")
+        return notes, next_page
 
     def _to_collected(self, tag: str, note: dict) -> Optional[CollectedPost]:
         note_key = note.get("key")
@@ -98,9 +91,10 @@ class NoteHashtagCollector:
         username = user.get("urlname") or user.get("nickname") or "unknown"
         display_name = user.get("name") or user.get("nickname") or username
         url = f"{self.BASE_URL}/{username}/n/{note_key}"
+        keyword = tag if tag.startswith("#") else f"#{tag}"
         content = body.strip()
         return CollectedPost(
-            source_keyword=tag,
+            source_keyword=keyword,
             platform_id=note_key,
             username=f"@{username}",
             display_name=display_name,
