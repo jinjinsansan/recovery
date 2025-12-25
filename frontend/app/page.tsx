@@ -4,11 +4,13 @@ import {
   buildMethodInsights,
   buildSummary,
   buildSymptomInsights,
+  dedupeEventsByPost,
   MethodInsight,
   NoteEvent,
   SymptomInsight,
   SummaryMetrics,
 } from '@/lib/noteInsights';
+import { MENTAL_HEALTH_TAGS, tagSlugFromLabel } from '@/lib/mentalTags';
 
 export const revalidate = 300;
 
@@ -17,21 +19,30 @@ export default async function HomePage() {
   const summary = buildSummary(events);
   const methodInsights = buildMethodInsights(events).sort((a, b) => b.positive - a.positive);
   const symptomInsights = buildSymptomInsights(events);
-  const canonicalTags = ['#うつ', '#パニック', '#不眠'];
+  const normalizedInsights = symptomInsights.map((insight) => ({
+    ...insight,
+    keyword: normalizeKeyword(insight.keyword),
+  }));
+  const insightMap = new Map(normalizedInsights.map((insight) => [insight.keyword, insight]));
   const prioritizedTags = Array.from(
     new Set([
-      ...canonicalTags,
-      ...symptomInsights.map((insight) => normalizeKeyword(insight.keyword)),
+      ...MENTAL_HEALTH_TAGS,
+      ...normalizedInsights.map((insight) => insight.keyword),
     ])
-  ).slice(0, 3);
-  const hashtagBuckets = buildHashtagBuckets(events, prioritizedTags, 100);
+  ).filter((tag) => tag !== '#未分類');
+  const timelineTags = prioritizedTags.slice(0, 6);
+  const hashtagBuckets = buildHashtagBuckets(events, timelineTags, 100);
+  const navigatorEntries = MENTAL_HEALTH_TAGS.map((tag) => ({
+    label: tag,
+    insight: insightMap.get(tag),
+  }));
 
   return (
     <div className="bg-white text-slate-900">
       <HeroSection summary={summary} topMethod={methodInsights[0]} focusSymptom={symptomInsights[0]} />
       <main className="max-w-6xl mx-auto px-4 py-16 space-y-16">
         <HowToRead summary={summary} />
-        <SymptomNavigator insights={symptomInsights} />
+        <SymptomNavigator entries={navigatorEntries} />
         <RecoveryPulse summary={summary} />
         <MethodHighlights methods={methodInsights.slice(0, 4)} />
         <HashtagStories buckets={hashtagBuckets} />
@@ -145,9 +156,12 @@ function HowToRead({ summary }: { summary: SummaryMetrics }) {
   );
 }
 
-function SymptomNavigator({ insights }: { insights: SymptomInsight[] }) {
-  if (insights.length === 0) return null;
-  const tags = insights.slice(0, 6);
+function SymptomNavigator({
+  entries,
+}: {
+  entries: { label: string; insight?: SymptomInsight }[];
+}) {
+  if (entries.length === 0) return null;
   return (
     <section className="bg-slate-50 rounded-3xl p-6 border border-slate-200">
       <div className="flex items-center justify-between mb-4">
@@ -156,22 +170,22 @@ function SymptomNavigator({ insights }: { insights: SymptomInsight[] }) {
           <h2 className="text-xl font-semibold mt-1">症状タグを選んで事例を探す</h2>
         </div>
         <Link href="/analysts" className="text-sm text-emerald-600 hover:text-emerald-700">
-          すべてのタグ →
+          分析コンソールへ →
         </Link>
       </div>
       <div className="flex flex-wrap gap-3">
-        {tags.map((tag) => {
-          const label = normalizeKeyword(tag.keyword);
-          return (
+        {entries.map(({ label, insight }) => (
           <Link
-              key={tag.keyword}
-              href={`/analysts?tag=${encodeURIComponent(label)}`}
-              className="px-4 py-2 rounded-full bg-white border border-slate-200 text-sm text-slate-700 hover:border-emerald-400"
-            >
-              {label} · 肯定 {tag.positiveShare}%
-            </Link>
-          );
-        })}
+            key={label}
+            href={`/tags/${tagSlugFromLabel(label)}`}
+            className={`px-4 py-2 rounded-full border text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-500 ${
+              insight ? 'bg-white border-slate-200 text-slate-700 hover:border-emerald-400' : 'bg-white border-slate-100 text-slate-400'
+            }`}
+          >
+            {label}
+            {insight ? ` · 肯定 ${insight.positiveShare}%` : ' · データ準備中'}
+          </Link>
+        ))}
       </div>
     </section>
   );
@@ -253,9 +267,20 @@ function MethodHighlights({ methods }: { methods: MethodInsight[] }) {
               <span className="px-3 py-1 rounded-full bg-slate-100">経過 {method.neutral}</span>
               <span className="px-3 py-1 rounded-full bg-slate-100">悪化 {method.negative}</span>
             </div>
-            <Link href={`/method/${method.method_slug}`} className="mt-6 inline-flex items-center text-sm text-emerald-600 hover:text-emerald-700">
-              詳細を見る →
-            </Link>
+            {method.sample?.raw_posts.url ? (
+              <a
+                href={method.sample.raw_posts.url}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-6 inline-flex items-center text-sm text-emerald-600 hover:text-emerald-700"
+              >
+                noteを読む →
+              </a>
+            ) : (
+              <Link href={`/method/${method.method_slug}`} className="mt-6 inline-flex items-center text-sm text-emerald-600 hover:text-emerald-700">
+                詳細を見る →
+              </Link>
+            )}
           </article>
         ))}
       </div>
@@ -275,22 +300,33 @@ function HashtagStories({ buckets }: { buckets: HashtagBucket[] }) {
         </div>
       </div>
       <div className="space-y-10">
-        {buckets.map((bucket) => (
-          <article key={bucket.keyword} className="space-y-4">
-            <div className="flex flex-col gap-1 md:flex-row md:items-baseline md:justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Hashtag</p>
-                <h3 className="text-2xl font-semibold mt-1">{bucket.keyword}</h3>
+        {buckets.map((bucket) => {
+          const previewStories = bucket.stories.slice(0, 5);
+          const remaining = Math.max(bucket.total - previewStories.length, 0);
+          return (
+            <article key={bucket.keyword} className="space-y-4">
+              <div className="flex flex-col gap-1 md:flex-row md:items-baseline md:justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Hashtag</p>
+                  <h3 className="text-2xl font-semibold mt-1">{bucket.keyword}</h3>
+                </div>
+                <div className="flex items-center gap-3 text-sm text-slate-500">
+                  <span>最新 {previewStories.length} / 全 {bucket.total} 件</span>
+                  {remaining > 0 && (
+                    <Link href={`/tags/${tagSlugFromLabel(bucket.keyword)}`} className="text-emerald-600 hover:text-emerald-700">
+                      もっと見る（残り {remaining} 件） →
+                    </Link>
+                  )}
+                </div>
               </div>
-              <p className="text-sm text-slate-500">最新 {bucket.stories.length} / 全 {bucket.total} 件</p>
-            </div>
-            <div className="rounded-2xl border border-slate-100 divide-y divide-slate-100 overflow-hidden">
-              {bucket.stories.map((event) => (
-                <HashtagStoryCard key={`${bucket.keyword}-${event.id}-${event.method_slug}`} event={event} hashtag={bucket.keyword} />
-              ))}
-            </div>
-          </article>
-        ))}
+              <div className="rounded-2xl border border-slate-100 divide-y divide-slate-100 overflow-hidden">
+                {previewStories.map((event) => (
+                  <HashtagStoryCard key={`${bucket.keyword}-${event.id}-${event.method_slug}`} event={event} hashtag={bucket.keyword} />
+                ))}
+              </div>
+            </article>
+          );
+        })}
       </div>
     </section>
   );
@@ -320,6 +356,12 @@ function SymptomExplorer({ insights }: { insights: SymptomInsight[] }) {
             <p className="text-sm text-slate-500">肯定 {insight.positiveShare}%</p>
             <p className="text-sm text-slate-500 mt-4">よく登場する方法</p>
             <p className="text-lg font-semibold text-slate-900">{insight.topMethod}</p>
+            <Link
+              href={`/tags/${tagSlugFromLabel(label)}`}
+              className="mt-4 inline-flex text-sm text-emerald-600 hover:text-emerald-700"
+            >
+              投稿を読む →
+            </Link>
             </article>
           );
         })}
@@ -363,15 +405,7 @@ type HashtagBucket = {
 
 function buildHashtagBuckets(events: NoteEvent[], tags: string[], perTagLimit: number): HashtagBucket[] {
   if (events.length === 0 || tags.length === 0) return [];
-  const seenPosts = new Set<string>();
-  const uniqueEvents: NoteEvent[] = [];
-  for (const event of events) {
-    const postId = event.raw_posts.id;
-    if (!postId) continue;
-    if (seenPosts.has(postId)) continue;
-    seenPosts.add(postId);
-    uniqueEvents.push(event);
-  }
+  const uniqueEvents = dedupeEventsByPost(events);
   const grouped = new Map<string, NoteEvent[]>();
   for (const event of uniqueEvents) {
     const key = normalizeKeyword(event.raw_posts.source_keyword);
@@ -402,15 +436,15 @@ function normalizeKeyword(keyword?: string | null) {
 }
 
 function HashtagStoryCard({ event, hashtag }: { event: NoteEvent; hashtag: string }) {
-  const label = event.effect_label === 'positive' ? '✓ 改善' : event.effect_label === 'negative' ? '✗ 悪化' : '経過観察';
+  const { label, badgeClass } = effectBadge(event.effect_label);
   return (
     <article className="bg-white px-4 py-5 md:px-6 md:py-6 flex flex-col gap-3">
       <div className="flex items-center justify-between text-xs text-slate-500">
         <span>{hashtag}</span>
-        <span>{label}</span>
+        <span className={badgeClass}>{label}</span>
       </div>
       <p className="text-lg font-semibold text-slate-900">{event.raw_posts.username}</p>
-      <p className="text-sm text-slate-600 leading-relaxed">{event.raw_posts.content}</p>
+      <p className="text-sm text-slate-600 leading-relaxed line-clamp-3">{event.raw_posts.content}</p>
       <div className="flex items-center justify-between text-xs text-slate-500">
         <span>{formatDate(event.raw_posts.posted_at)}</span>
         <a href={event.raw_posts.url} target="_blank" rel="noreferrer" className="text-emerald-600 hover:text-emerald-700">
@@ -419,4 +453,16 @@ function HashtagStoryCard({ event, hashtag }: { event: NoteEvent; hashtag: strin
       </div>
     </article>
   );
+}
+
+function effectBadge(effect: NoteEvent['effect_label']) {
+  switch (effect) {
+    case 'positive':
+      return { label: '改善', badgeClass: 'px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100' };
+    case 'negative':
+      return { label: '悪化', badgeClass: 'px-2 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-100' };
+    case 'neutral':
+    default:
+      return { label: '経過観察', badgeClass: 'px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-100' };
+  }
 }

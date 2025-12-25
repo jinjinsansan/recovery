@@ -37,6 +37,7 @@ export type SummaryMetrics = {
 type FetchOptions = {
   limit?: number;
   methodSlug?: string;
+  sourceKeyword?: string;
 };
 
 export async function fetchNoteEvents(options: FetchOptions = {}): Promise<NoteEvent[]> {
@@ -66,6 +67,9 @@ export async function fetchNoteEvents(options: FetchOptions = {}): Promise<NoteE
 
   if (options.methodSlug) {
     query = query.eq('method_slug', options.methodSlug);
+  }
+  if (options.sourceKeyword) {
+    query = query.eq('raw_posts.source_keyword', options.sourceKeyword);
   }
   if (options.limit) {
     query = query.limit(options.limit);
@@ -177,4 +181,17 @@ export function buildSymptomInsights(events: NoteEvent[]): SymptomInsight[] {
       };
     })
     .sort((a, b) => b.totalStories - a.totalStories);
+}
+
+export function dedupeEventsByPost(events: NoteEvent[]): NoteEvent[] {
+  const seen = new Set<string>();
+  const unique: NoteEvent[] = [];
+  for (const event of events) {
+    const postId = event.raw_posts?.id;
+    if (!postId) continue;
+    if (seen.has(postId)) continue;
+    seen.add(postId);
+    unique.push(event);
+  }
+  return unique;
 }
