@@ -217,7 +217,7 @@ def parse_datetime(value: Any) -> datetime | None:
 def load_env() -> None:
     dotenv_path = ROOT_DIR / ".env"
     load_dotenv(dotenv_path=dotenv_path, override=True)
-    load_dotenv(override=True)
+    load_dotenv(override=False)
 
 
 if __name__ == "__main__":
