@@ -1,310 +1,250 @@
 import Link from 'next/link';
-import { supabase } from '@/lib/supabase';
-import type { MethodStats, RawPost } from '@/lib/supabase';
+import {
+  fetchNoteEvents,
+  buildMethodInsights,
+  buildSummary,
+  buildSymptomInsights,
+  MethodInsight,
+  NoteEvent,
+  SymptomInsight,
+  SummaryMetrics,
+} from '@/lib/noteInsights';
 
-type RecoveryStory = {
-  id: string;
-  method_slug: string;
-  method_display_name: string;
-  action_text: string;
-  effect_text: string;
-  effect_label: 'positive' | 'negative' | 'neutral' | 'unknown';
-  sentiment_score: number;
-  confidence: number;
-  created_at: string;
-  raw_posts: RawPost | null;
-};
-
-type SymptomInsight = {
-  keyword: string;
-  totalStories: number;
-  positiveShare: number;
-  topMethod: string;
-};
-
-async function getMethodStats(): Promise<MethodStats[]> {
-  const { data, error } = await supabase
-    .from('method_stats')
-    .select('*')
-    .order('positive_total', { ascending: false });
-
-  if (error) {
-    console.error('Error fetching method stats:', error);
-    return [];
-  }
-
-  return data ?? [];
-}
-
-type SupabaseStoryRow = Omit<RecoveryStory, 'raw_posts'> & {
-  raw_posts: RawPost | RawPost[] | null;
-};
-
-async function getRecentStories(limit = 8): Promise<RecoveryStory[]> {
-  const { data, error } = await supabase
-    .from('method_events')
-    .select(`
-      id,
-      method_slug,
-      method_display_name,
-      action_text,
-      effect_text,
-      effect_label,
-      sentiment_score,
-      confidence,
-      created_at,
-      raw_posts:post_id (
-        id,
-        content,
-        source_keyword,
-        posted_at,
-        username,
-        url
-      )
-    `)
-    .eq('spam_flag', false)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-
-  if (error) {
-    console.error('Error fetching recovery stories:', error);
-    return [];
-  }
-
-  const rows = (data ?? []) as SupabaseStoryRow[];
-
-  return rows.map((story) => {
-    const raw = Array.isArray(story.raw_posts) ? story.raw_posts[0] : story.raw_posts;
-    return {
-      ...story,
-      raw_posts: raw ?? null,
-    };
-  });
-}
+export const revalidate = 300;
 
 export default async function HomePage() {
-  const [methods, stories] = await Promise.all([getMethodStats(), getRecentStories()]);
-  const summary = buildSummary(methods);
-  const highlightedMethods = methods.slice(0, 6);
-  const symptomInsights = buildSymptomInsights(stories);
-  const lastUpdated = methods[0]?.updated_at;
+  const events = await fetchNoteEvents();
+  const summary = buildSummary(events);
+  const methodInsights = buildMethodInsights(events).sort((a, b) => b.positive - a.positive);
+  const stories = events.slice(0, 6);
+  const symptomInsights = buildSymptomInsights(events).slice(0, 3);
 
   return (
     <div className="bg-slate-950 text-white">
-      <HeroSection summary={summary} lastUpdated={lastUpdated} />
-
-      <main className="bg-slate-950">
-        <section className="max-w-6xl mx-auto px-4 py-12 space-y-12">
-          <RecoveryPulse summary={summary} />
-          <MethodGrid methods={highlightedMethods} stories={stories} />
-          <StoriesSection stories={stories} />
-          <SymptomExplorer insights={symptomInsights} methods={methods} />
-        </section>
-
-        <MethodologySection />
-        <FooterCTA />
+      <HeroSection summary={summary} topMethod={methodInsights[0]} />
+      <main className="max-w-6xl mx-auto px-4 py-16 space-y-16">
+        <HowToRead summary={summary} />
+        <RecoveryPulse summary={summary} />
+        <MethodHighlights methods={methodInsights.slice(0, 4)} />
+        <StoriesSection stories={stories} />
+        <SymptomExplorer insights={symptomInsights} />
+        <CtaPanel />
       </main>
     </div>
   );
 }
 
-function HeroSection({ summary, lastUpdated }: { summary: ReturnType<typeof buildSummary>; lastUpdated?: string }) {
+function HeroSection({ summary, topMethod }: { summary: SummaryMetrics; topMethod?: MethodInsight }) {
   return (
-    <section className="border-b border-white/10">
-      <div className="max-w-6xl mx-auto px-4 py-16 grid gap-10 lg:grid-cols-[3fr,2fr]">
+    <section className="border-b border-white/10 bg-slate-950">
+      <div className="max-w-6xl mx-auto px-4 py-16 grid gap-12 lg:grid-cols-[3fr,2fr]">
         <div>
-          <p className="text-sm uppercase tracking-[0.3em] text-emerald-300">MENTAL COLLECTIVE INTELLIGENCE</p>
-          <h1 className="mt-4 text-3xl sm:text-4xl font-semibold leading-tight">
-            メンタルヘルス当事者の「効いた」を可視化する、信頼できるダッシュボード
+          <p className="text-sm uppercase tracking-[0.3em] text-emerald-300">MENTAL RECOVERY INTELLIGENCE</p>
+          <h1 className="mt-4 text-4xl font-semibold leading-tight">
+            note の一次体験から「効いた方法」だけを抽出し、誰でも比較できるようにしました。
           </h1>
           <p className="mt-6 text-lg text-slate-200">
-            note から収集した一次体験を AI が構造化。症状別に再現性の高い回復方法を、温度感ごとに読み解けます。
+            匿名の投稿を AI が構造化し、症状タグ・行動・効果ラベルで整理。医療広告ではなく、当事者同士が参考にできるナレッジとして公開しています。
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
-            <a href="#methods" className="px-5 py-3 bg-emerald-400 text-slate-900 font-semibold rounded-full shadow-lg shadow-emerald-400/40">
-              回復方法をみる
-            </a>
-            <a href="#stories" className="px-5 py-3 border border-white/30 rounded-full text-white hover:bg-white/10">
-              最新の体験談
-            </a>
+            <Link href="/analysts" className="px-6 py-3 bg-emerald-400 text-slate-900 font-semibold rounded-full shadow-lg shadow-emerald-400/40">
+              メソッドを詳しくみる
+            </Link>
+            <Link href="/about" className="px-6 py-3 border border-white/30 rounded-full text-white hover:bg-white/10">
+              仕組みとバイアス対策
+            </Link>
           </div>
-          <p className="mt-6 text-sm text-slate-300">
-            {lastUpdated ? `最終更新 ${new Date(lastUpdated).toLocaleString('ja-JP')}` : 'Supabase リアルタイム連携中'} · 医療アドバイスではなく、当事者の声を安心して拾うための情報基盤です。
+          <p className="mt-6 text-sm text-slate-400">
+            最終更新 {summary.lastUpdated ? formatDate(summary.lastUpdated) : '—'} · note 公開投稿のみ / スパム自動除去 / 削除リクエスト対応
           </p>
         </div>
         <div className="bg-white/5 rounded-3xl p-6 space-y-6 backdrop-blur">
-          <StatItem label="記録されている回復方法" value={`${summary.methodCount} 種類`} accent="text-emerald-300" />
-          <StatItem label="改善報告" value={`${summary.totalPositive.toLocaleString()} 件`} accent="text-sky-300" subtitle={`全${summary.totalReports.toLocaleString()}件中`} />
-          <StatItem label="note からの一次体験" value={`${summary.storyCount}+ 件/週`} accent="text-rose-300" subtitle="AI スパム検出・匿名化済" />
+          <HeroStat label="note 由来の回復方法" value={`${summary.methodCount} 種類`} />
+          <HeroStat label="改善までの証言" value={`${summary.totalPositive.toLocaleString()} 件`} helper={`全${summary.totalReports.toLocaleString()}件中`} />
+          <HeroStat label="直近シグナル" value={topMethod ? `${topMethod.display_name} · ${topMethod.successRate}%` : 'データ収集中'} helper="成功率 Top method" />
         </div>
       </div>
     </section>
   );
 }
 
-function StatItem({ label, value, accent, subtitle }: { label: string; value: string; accent: string; subtitle?: string }) {
+function HeroStat({ label, value, helper }: { label: string; value: string; helper?: string }) {
   return (
     <div>
-      <p className="text-xs uppercase tracking-[0.2em] text-slate-400">{label}</p>
-      <p className={`text-3xl font-semibold mt-2 ${accent}`}>{value}</p>
-      {subtitle && <p className="text-sm text-slate-400 mt-1">{subtitle}</p>}
+      <p className="text-xs uppercase tracking-[0.3em] text-slate-400">{label}</p>
+      <p className="text-3xl font-semibold mt-3 text-white">{value}</p>
+      {helper && <p className="text-sm text-slate-400 mt-1">{helper}</p>}
     </div>
   );
 }
 
-function RecoveryPulse({ summary }: { summary: ReturnType<typeof buildSummary> }) {
-  const balance = summary.totalReports === 0 ? 0 : Math.round((summary.totalPositive / summary.totalReports) * 100);
+function HowToRead({ summary }: { summary: SummaryMetrics }) {
+  const steps = [
+    {
+      title: '症状タグを選ぶ',
+      body: '「うつ」「パニック」など note の投稿タグでグループ化しています。該当するタグをクリック。',
+    },
+    {
+      title: '再現性が高い方法を見る',
+      body: '改善 / 経過 / 悪化の件数から、どの方法に肯定的な声が多いかを把握します。',
+    },
+    {
+      title: '一次体験を読む',
+      body: 'カードの「元記事を読む」から note へ移動し、全文を確認できます。',
+    },
+  ];
   return (
-    <section aria-labelledby="pulse" className="bg-white text-slate-900 rounded-3xl p-6" id="pulse">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+    <section className="bg-white/5 rounded-3xl p-6 border border-white/10">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <p className="text-sm uppercase tracking-[0.3em] text-emerald-300">How to use</p>
+          <h2 className="text-2xl font-semibold mt-1">このダッシュボードの読み方</h2>
+        </div>
+        <p className="text-sm text-slate-300">現在 {summary.storyCount} 件の note 体験談を解析済み</p>
+      </div>
+      <div className="grid gap-6 md:grid-cols-3">
+        {steps.map((step, index) => (
+          <article key={step.title} className="rounded-2xl bg-white/5 p-4 border border-white/10">
+            <p className="text-sm text-emerald-300">STEP {index + 1}</p>
+            <h3 className="text-lg font-semibold mt-2">{step.title}</h3>
+            <p className="mt-2 text-sm text-slate-300">{step.body}</p>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function RecoveryPulse({ summary }: { summary: SummaryMetrics }) {
+  const rows = [
+    { label: '改善', value: summary.totalPositive, color: 'bg-emerald-500' },
+    { label: '経過観察', value: summary.totalNeutral, color: 'bg-amber-400' },
+    { label: '悪化', value: summary.totalNegative, color: 'bg-rose-500' },
+  ];
+  const total = summary.totalReports || 1;
+  return (
+    <section className="bg-white text-slate-900 rounded-3xl p-6" aria-labelledby="pulse">
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
         <div>
           <p className="text-sm font-semibold text-emerald-600">Recovery Pulse</p>
-          <h2 id="pulse" className="text-2xl font-bold mt-1">
-            note コミュニティの改善トレンド
+          <h2 id="pulse" className="text-2xl font-semibold mt-1">
+            note コミュニティの直近バランス
           </h2>
-          <p className="text-slate-500 mt-2">直近 30 日の投稿から算出した肯定/否定バランス。</p>
         </div>
         <div className="text-right">
-          <p className="text-sm text-slate-500">肯定シェア</p>
-          <p className="text-3xl font-semibold text-emerald-600">{balance}%</p>
+          <p className="text-xs text-slate-500">肯定シェア</p>
+          <p className="text-3xl font-semibold text-emerald-600">
+            {total === 0 ? 0 : Math.round((summary.totalPositive / total) * 100)}%
+          </p>
         </div>
       </div>
       <div className="mt-6 space-y-4">
-        <PulseBar label="改善" value={summary.totalPositive} total={summary.totalReports} color="bg-emerald-500" />
-        <PulseBar label="経過観察" value={summary.totalNeutral} total={summary.totalReports} color="bg-amber-400" />
-        <PulseBar label="悪化" value={summary.totalNegative} total={summary.totalReports} color="bg-rose-500" />
+        {rows.map((row) => {
+          const percent = Math.round((row.value / total) * 100);
+          return (
+            <div key={row.label}>
+              <div className="flex justify-between text-sm text-slate-600 mb-1">
+                <span>{row.label}</span>
+                <span>
+                  {row.value} 件 · {percent}%
+                </span>
+              </div>
+              <div className="h-3 bg-slate-100 rounded-full">
+                <div className={`h-3 rounded-full ${row.color}`} style={{ width: `${percent}%` }} />
+              </div>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
 }
 
-function PulseBar({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
-  const percent = total === 0 ? 0 : Math.round((value / total) * 100);
+function MethodHighlights({ methods }: { methods: MethodInsight[] }) {
+  if (methods.length === 0) {
+    return null;
+  }
   return (
-    <div>
-      <div className="flex justify-between text-sm mb-1 text-slate-600">
-        <span>{label}</span>
-        <span>
-          {value} 件 · {percent}%
-        </span>
-      </div>
-      <div className="h-3 bg-slate-100 rounded-full">
-        <div className={`h-3 rounded-full ${color}`} style={{ width: `${percent}%` }} />
-      </div>
-    </div>
-  );
-}
-
-function MethodGrid({ methods, stories }: { methods: MethodStats[]; stories: RecoveryStory[] }) {
-  const topSlug = methods[0]?.method_slug ?? '#';
-  return (
-    <section id="methods">
+    <section>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <p className="text-sm uppercase tracking-[0.3em] text-emerald-300">Recovery Methods</p>
-          <h2 className="text-3xl font-semibold mt-2">回復方法ランキング（最新 note から）</h2>
+          <p className="text-sm uppercase tracking-[0.3em] text-emerald-300">Consensus Snapshot</p>
+          <h2 className="text-3xl font-semibold mt-2">改善報告が多い方法</h2>
         </div>
-        <Link href={topSlug === '#' ? '#' : `/method/${topSlug}`} className="text-sm text-emerald-300 hover:text-white transition">
-          詳細検索 →
+        <Link href="/analysts" className="text-sm text-emerald-300 hover:text-white">
+          すべて見る →
         </Link>
       </div>
-      {methods.length === 0 ? (
-        <p className="text-slate-300">まだ十分なデータがありません。</p>
-      ) : (
-        <div className="grid gap-6 md:grid-cols-2">
-          {methods.map((method) => (
-            <MethodCard key={method.method_slug} method={method} stories={stories} />
-          ))}
-        </div>
-      )}
+      <div className="grid gap-6 md:grid-cols-2">
+        {methods.map((method) => (
+          <article key={method.method_slug} className="rounded-3xl bg-white/5 p-6 border border-white/10">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xl font-semibold">{method.display_name}</h3>
+              <span className="text-sm text-emerald-300">成功率 {method.successRate}%</span>
+            </div>
+            {method.sample && (
+              <p className="mt-4 text-slate-200 line-clamp-4">{method.sample.raw_posts.content}</p>
+            )}
+            <div className="mt-6 flex flex-wrap gap-3 text-sm text-slate-300">
+              <span className="px-3 py-1 rounded-full bg-white/10">改善 {method.positive}</span>
+              <span className="px-3 py-1 rounded-full bg-white/10">経過 {method.neutral}</span>
+              <span className="px-3 py-1 rounded-full bg-white/10">悪化 {method.negative}</span>
+            </div>
+            <Link href={`/method/${method.method_slug}`} className="mt-6 inline-flex items-center text-sm text-emerald-300 hover:text-white">
+              詳細を見る →
+            </Link>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }
 
-function MethodCard({ method, stories }: { method: MethodStats; stories: RecoveryStory[] }) {
-  const total = method.positive_total + method.negative_total + method.neutral_total;
-  const successRate = total === 0 ? 0 : Math.round((method.positive_total / total) * 100);
-  const snippet = stories.find((story) => story.method_slug === method.method_slug);
-  const content =
-    snippet?.raw_posts?.content ??
-    `${method.display_name} を試した note の体験談を AI が抽出します。`; 
-
-  return (
-    <article className="rounded-3xl bg-white/5 p-6 border border-white/10 hover:border-white/30 transition" aria-label={method.display_name}>
-      <div className="flex items-center justify-between">
-        <h3 className="text-xl font-semibold text-white">{method.display_name}</h3>
-        <span className="text-sm text-emerald-300">成功率 {successRate}%</span>
-      </div>
-      <p className="mt-4 text-slate-200 line-clamp-3">{content}</p>
-      <div className="mt-6 flex flex-wrap gap-3 text-sm text-slate-300">
-        <span className="px-3 py-1 rounded-full bg-white/10">改善 {method.positive_total}</span>
-        <span className="px-3 py-1 rounded-full bg-white/10">経過 {method.neutral_total}</span>
-        <span className="px-3 py-1 rounded-full bg-white/10">悪化 {method.negative_total}</span>
-      </div>
-      <Link href={`/method/${method.method_slug}`} className="mt-6 inline-flex items-center text-sm text-emerald-300 hover:text-white">
-        詳細を見る →
-      </Link>
-    </article>
-  );
-}
-
-function StoriesSection({ stories }: { stories: RecoveryStory[] }) {
+function StoriesSection({ stories }: { stories: NoteEvent[] }) {
+  if (stories.length === 0) {
+    return null;
+  }
   return (
     <section id="stories">
       <div className="flex items-center justify-between mb-6">
         <div>
           <p className="text-sm uppercase tracking-[0.3em] text-emerald-300">Stories from note</p>
-          <h2 className="text-3xl font-semibold mt-2">最新の体験談</h2>
+          <h2 className="text-3xl font-semibold mt-2">一次体験の抜粋</h2>
         </div>
-        <a
-          href="https://note.com/hashtag/%E3%81%86%E3%81%A4"
-          target="_blank"
-          rel="noreferrer"
-          className="text-sm text-slate-300 hover:text-white"
-        >
+        <a className="text-sm text-slate-300 hover:text-white" target="_blank" rel="noreferrer" href="https://note.com/hashtag/%E3%81%86%E3%81%A4">
           note で読む →
         </a>
       </div>
-      {stories.length === 0 ? (
-        <p className="text-slate-300">体験談を収集中です。</p>
-      ) : (
-        <div className="grid gap-6 md:grid-cols-2">
-          {stories.map((story) => {
-            const postedAt = story.raw_posts?.posted_at;
-            return (
-              <article key={story.id} className="bg-white/5 rounded-3xl p-5 border border-white/10">
-              <div className="flex items-center justify-between text-sm text-slate-300">
-                <span>{story.raw_posts?.source_keyword ?? '症状不明'}</span>
-                <span>{story.effect_label === 'positive' ? '✓ 改善' : story.effect_label === 'negative' ? '✗ 悪化' : '経過観察'}</span>
-              </div>
-              <h3 className="text-lg font-semibold mt-2 text-white">{story.method_display_name}</h3>
-              <p className="mt-3 text-slate-200 max-h-28 overflow-hidden">{story.raw_posts?.content ?? story.effect_text}</p>
-              <div className="mt-4 flex items-center justify-between text-xs text-slate-400">
-                <span>@{story.raw_posts?.username ?? 'note user'}</span>
-                  {postedAt && (
-                    <span>{new Date(postedAt).toLocaleDateString('ja-JP')}</span>
-                )}
-              </div>
-              {story.raw_posts?.url && (
-                <a
-                  href={story.raw_posts.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-4 inline-flex text-sm text-emerald-300 hover:text-white"
-                >
-                  元記事を読む →
-                </a>
-              )}
-            </article>
-            );
-          })}
-        </div>
-      )}
+      <div className="grid gap-6 md:grid-cols-2">
+        {stories.map((story) => (
+          <article key={story.id} className="bg-white/5 rounded-3xl p-5 border border-white/10">
+            <div className="flex items-center justify-between text-sm text-slate-300">
+              <span>#{story.raw_posts.source_keyword || '未分類'}</span>
+              <span>
+                {story.effect_label === 'positive'
+                  ? '✓ 改善'
+                  : story.effect_label === 'negative'
+                  ? '✗ 悪化'
+                  : '経過観察'}
+              </span>
+            </div>
+            <h3 className="text-lg font-semibold mt-2 text-white">{story.method_display_name}</h3>
+            <p className="mt-3 text-slate-200 max-h-28 overflow-hidden">{story.raw_posts.content}</p>
+            <div className="mt-4 flex items-center justify-between text-xs text-slate-400">
+              <span>{story.raw_posts.username}</span>
+              <span>{formatDate(story.raw_posts.posted_at)}</span>
+            </div>
+            <a href={story.raw_posts.url} target="_blank" rel="noreferrer" className="mt-4 inline-flex text-sm text-emerald-300 hover:text-white">
+              元記事を読む →
+            </a>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }
 
-function SymptomExplorer({ insights, methods }: { insights: SymptomInsight[]; methods: MethodStats[] }) {
+function SymptomExplorer({ insights }: { insights: SymptomInsight[] }) {
   if (insights.length === 0) {
     return null;
   }
@@ -313,21 +253,21 @@ function SymptomExplorer({ insights, methods }: { insights: SymptomInsight[]; me
       <div className="flex items-center justify-between mb-6">
         <div>
           <p className="text-sm uppercase tracking-[0.3em] text-emerald-300">Symptom Explorer</p>
-          <h2 className="text-3xl font-semibold mt-2">症状別にみる回復のヒント</h2>
+          <h2 className="text-3xl font-semibold mt-2">症状タグ別のシグナル</h2>
         </div>
+        <Link href="/analysts" className="text-sm text-slate-300 hover:text-white">
+          タグ別内訳 →
+        </Link>
       </div>
       <div className="grid gap-6 md:grid-cols-3">
         {insights.map((insight) => (
           <article key={insight.keyword} className="bg-white/5 rounded-3xl p-5 border border-white/10">
             <p className="text-sm text-slate-300">症状タグ</p>
-            <h3 className="text-xl font-semibold text-white mt-1">#{insight.keyword}</h3>
-            <p className="text-sm text-slate-300 mt-3">関連体験 {insight.totalStories} 件</p>
-            <p className="text-sm text-slate-300">肯定 {insight.positiveShare}%</p>
-            <p className="text-sm text-slate-400 mt-4">もっとも引用された方法</p>
+            <h3 className="text-xl font-semibold mt-1">#{insight.keyword}</h3>
+            <p className="text-sm text-slate-400 mt-3">関連体験 {insight.totalStories} 件</p>
+            <p className="text-sm text-slate-400">肯定 {insight.positiveShare}%</p>
+            <p className="text-sm text-slate-400 mt-4">よく登場する方法</p>
             <p className="text-lg font-semibold text-emerald-200">{insight.topMethod}</p>
-            <div className="mt-4 text-sm text-slate-300">
-              {suggestAlternativeMethod(insight.topMethod, methods)}
-            </div>
           </article>
         ))}
       </div>
@@ -335,117 +275,29 @@ function SymptomExplorer({ insights, methods }: { insights: SymptomInsight[]; me
   );
 }
 
-function MethodologySection() {
-  const items = [
-    {
-      title: '1. Collect',
-      body: 'note ハッシュタグから公開体験談のみを取得し、URL とタイムスタンプを保持します。個人が特定される情報や下書きは扱いません。',
-    },
-    {
-      title: '2. Analyze',
-      body: 'LLM (GPT-4o) で行動・効果・症状タグ・スパムスコアを抽出。成果物は透明性を保つため JSON で保存しています。',
-    },
-    {
-      title: '3. Visualize',
-      body: 'Supabase に保持したデータを期間集計し、症状別・方法別にフィードバック。医療アドバイスではなくピアサポートの指針として提示します。',
-    },
-  ];
+function CtaPanel() {
   return (
-    <section className="bg-white text-slate-900 mt-16">
-      <div className="max-w-6xl mx-auto px-4 py-16">
-        <p className="text-sm font-semibold text-emerald-600">Methodology</p>
-        <h2 className="text-3xl font-semibold mt-2">透明性のあるデータパイプライン</h2>
-        <p className="text-slate-600 mt-4">
-          すべてのデータは note からの一次引用であり、公開投稿のみを対象にしています。AI が抽出した内容は手動監査を経て Supabase に保存され、削除リクエストにも対応します。
-        </p>
-        <div className="grid gap-6 mt-8 md:grid-cols-3">
-          {items.map((item) => (
-            <article key={item.title} className="rounded-2xl border border-slate-200 p-5">
-              <h3 className="text-xl font-semibold text-slate-900">{item.title}</h3>
-              <p className="mt-3 text-slate-600">{item.body}</p>
-            </article>
-          ))}
+    <section className="bg-white text-slate-900 rounded-3xl p-6">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-emerald-600">Community Standard</p>
+          <h2 className="text-2xl font-semibold mt-1">note 投稿の削除依頼 / 新しいタグのリクエストはこちら</h2>
+          <p className="text-sm text-slate-500 mt-2">一次体験を尊重するため、掲載希望・削除依頼・タグ追加を受け付けています。</p>
+        </div>
+        <div className="flex flex-col gap-3">
+          <a href="mailto:team@mental-ci.jp" className="px-5 py-3 rounded-full bg-emerald-500 text-white font-semibold text-center">
+            運営に連絡する
+          </a>
+          <Link href="/about" className="text-sm text-center text-slate-600 hover:text-slate-900">
+            データポリシーを読む →
+          </Link>
         </div>
       </div>
     </section>
   );
 }
 
-function FooterCTA() {
-  return (
-    <footer className="bg-slate-900 text-slate-300">
-      <div className="max-w-6xl mx-auto px-4 py-12 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div>
-          <p className="text-sm text-emerald-300">Need Help?</p>
-          <h3 className="text-2xl font-semibold text-white mt-1">あなたの体験も匿名で共有できます。</h3>
-          <p className="text-sm mt-2">緊急の際は 24 時間の相談窓口や専門医療機関へ。ここは仲間の声を知る場所です。</p>
-        </div>
-        <div className="flex flex-col gap-3">
-          <a href="https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/0000140901.html" target="_blank" rel="noreferrer" className="px-5 py-3 rounded-full bg-emerald-400 text-slate-900 font-semibold text-center">
-            相談窓口一覧
-          </a>
-          <a href="mailto:hello@example.com" className="text-sm text-center text-slate-300 hover:text-white">
-            データ削除リクエスト →
-          </a>
-        </div>
-      </div>
-    </footer>
-  );
+function formatDate(value?: string) {
+  if (!value) return '—';
+  return new Date(value).toLocaleDateString('ja-JP');
 }
-
-function suggestAlternativeMethod(methodName: string, methods: MethodStats[]) {
-  const match = methods.find((method) => method.display_name === methodName);
-  if (!match) {
-    return '他の方法も近日追加予定です。';
-  }
-  const total = match.positive_total + match.negative_total + match.neutral_total;
-  const successRate = total === 0 ? 0 : Math.round((match.positive_total / total) * 100);
-  return `${successRate}% が改善と回答。詳しくは該当メソッドの詳細ページへ。`;
-}
-
-function buildSummary(methods: MethodStats[]) {
-  const methodCount = methods.length;
-  const totalPositive = methods.reduce((sum, method) => sum + method.positive_total, 0);
-  const totalNeutral = methods.reduce((sum, method) => sum + method.neutral_total, 0);
-  const totalNegative = methods.reduce((sum, method) => sum + method.negative_total, 0);
-  const totalReports = totalPositive + totalNeutral + totalNegative;
-  return {
-    methodCount,
-    totalPositive,
-    totalNeutral,
-    totalNegative,
-    totalReports,
-    storyCount: Math.max(12, Math.round(totalReports / 5)),
-  };
-}
-
-function buildSymptomInsights(stories: RecoveryStory[]): SymptomInsight[] {
-  const map = new Map<string, { count: number; positive: number; bestMethod: Map<string, number> }>();
-  for (const story of stories) {
-    const keyword = story.raw_posts?.source_keyword?.trim() || '未分類';
-    if (!map.has(keyword)) {
-      map.set(keyword, { count: 0, positive: 0, bestMethod: new Map() });
-    }
-    const entry = map.get(keyword)!;
-    entry.count += 1;
-    if (story.effect_label === 'positive') {
-      entry.positive += 1;
-    }
-    entry.bestMethod.set(story.method_display_name, (entry.bestMethod.get(story.method_display_name) ?? 0) + 1);
-  }
-  return Array.from(map.entries())
-    .map(([keyword, value]) => {
-      const topMethod = Array.from(value.bestMethod.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'データ準備中';
-      const positiveShare = value.count === 0 ? 0 : Math.round((value.positive / value.count) * 100);
-      return {
-        keyword,
-        totalStories: value.count,
-        positiveShare,
-        topMethod,
-      };
-    })
-    .sort((a, b) => b.totalStories - a.totalStories)
-    .slice(0, 3);
-}
-
-export const revalidate = 300;

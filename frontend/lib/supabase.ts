@@ -50,4 +50,5 @@ export interface RawPost {
   collected_at: string;
   url: string;
   lang: string;
+  ingestion_source?: string;
 }

@@ -1,199 +1,128 @@
-import { supabase } from '@/lib/supabase';
-import type { MethodStats, MethodEvent, RawPost } from '@/lib/supabase';
 import Link from 'next/link';
+import { fetchNoteEvents, NoteEvent } from '@/lib/noteInsights';
 
-type MethodEventWithPost = MethodEvent & { raw_posts: RawPost | null };
-
-async function getMethodDetails(slug: string): Promise<{
-  stats: MethodStats | null;
-  events: MethodEventWithPost[];
-}> {
-  const { data: stats } = await supabase
-    .from('method_stats')
-    .select('*')
-    .eq('method_slug', slug)
-    .single();
-
-  const { data: events } = await supabase
-    .from('method_events')
-    .select(`
-      *,
-      raw_posts:post_id (*)
-    `)
-    .eq('method_slug', slug)
-    .order('created_at', { ascending: false });
-
-  return {
-    stats: (stats ?? null) as MethodStats | null,
-    events: (events ?? []).map((event) => ({
-      ...event,
-      raw_posts: event.raw_posts ?? null,
-    })) as MethodEventWithPost[],
-  };
-}
-
-export default async function MethodDetailPage({
-  params,
-}: {
-  params: { slug: string };
-}) {
-  const { slug } = params;
-  const { stats, events } = await getMethodDetails(slug);
+export default async function MethodDetailPage({ params }: { params: { slug: string } }) {
+  const events = await fetchNoteEvents({ methodSlug: params.slug });
+  const stats = summarize(events);
 
   if (!stats) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-2xl font-bold text-gray-900">方法が見つかりません</h1>
-          <Link href="/" className="mt-4 text-blue-600 hover:underline">
-            トップページに戻る
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white px-4">
+        <div className="text-center space-y-3">
+          <h1 className="text-2xl font-semibold">まだ note 体験談がありません</h1>
+          <p className="text-sm text-slate-400">この方法の一次情報を収集中です。別の方法を参照するか、投稿をご共有ください。</p>
+          <Link href="/analysts" className="inline-flex text-emerald-300 hover:text-white text-sm">
+            メソッド一覧へ戻る →
           </Link>
         </div>
       </div>
     );
   }
 
-  const totalReports = stats.positive_total + stats.negative_total + stats.neutral_total;
-  const successRate = totalReports > 0 ? Math.round((stats.positive_total / totalReports) * 100) : 0;
+  const totalReports = stats.total;
+  const successRate = stats.successRate;
+  const recentStories = events.slice(0, 8);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200">
-        <div className="max-w-6xl mx-auto px-4 py-6">
-          <Link href="/" className="text-blue-600 hover:underline text-sm">
-            ← トップページに戻る
+    <div className="min-h-screen bg-slate-950 text-white">
+      <header className="border-b border-white/10 bg-slate-950">
+        <div className="max-w-5xl mx-auto px-4 py-8">
+          <Link href="/analysts" className="text-sm text-emerald-300 hover:text-white">
+            ← メソッド一覧
           </Link>
-          <h1 className="text-3xl font-bold text-gray-900 mt-2">{stats.display_name}</h1>
+          <h1 className="text-4xl font-semibold mt-2">{stats.displayName}</h1>
+          <p className="text-slate-300 text-sm mt-2">
+            note の一次体験 {totalReports} 件から算出 · 最終更新 {formatDate(stats.lastReportedAt)}
+          </p>
         </div>
       </header>
 
-      {/* Stats Overview */}
-      <div className="max-w-6xl mx-auto px-4 py-8">
-        <div className="bg-white rounded-lg shadow p-6 mb-8">
-          <div className="grid grid-cols-4 gap-6 text-center">
-            <div>
-              <div className="text-3xl font-bold text-blue-600">{totalReports}</div>
-              <div className="text-sm text-gray-600 mt-1">総報告数</div>
-            </div>
-            <div>
-              <div className="text-3xl font-bold text-green-600">{stats.positive_total}</div>
-              <div className="text-sm text-gray-600 mt-1">改善報告</div>
-            </div>
-            <div>
-              <div className="text-3xl font-bold text-red-600">{stats.negative_total}</div>
-              <div className="text-sm text-gray-600 mt-1">悪化報告</div>
-            </div>
-            <div>
-              <div className="text-3xl font-bold text-purple-600">{successRate}%</div>
-              <div className="text-sm text-gray-600 mt-1">成功率</div>
-            </div>
+      <div className="max-w-5xl mx-auto px-4 py-10 space-y-8">
+        <section className="bg-white/5 rounded-3xl border border-white/10 p-6">
+          <div className="grid gap-6 md:grid-cols-4 text-center">
+            <Stat label="総件数" value={`${totalReports}`} />
+            <Stat label="改善" value={`${stats.positive}`} tone="text-emerald-300" />
+            <Stat label="悪化" value={`${stats.negative}`} tone="text-rose-300" />
+            <Stat label="成功率" value={`${successRate}%`} />
           </div>
-
-          {/* Progress Bar */}
-          <div className="mt-6 w-full bg-gray-200 rounded-full h-3">
-            <div
-              className="bg-green-500 h-3 rounded-full transition-all"
-              style={{ width: `${successRate}%` }}
-            />
+          <div className="mt-6 h-2 rounded-full bg-white/10">
+            <div className="h-2 rounded-full bg-emerald-400" style={{ width: `${successRate}%` }} />
           </div>
-        </div>
+        </section>
 
-        {/* Testimonials */}
-        <div className="bg-white rounded-lg shadow">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <h2 className="text-xl font-semibold text-gray-900">ユーザー体験談</h2>
-            <p className="text-sm text-gray-600 mt-1">
-              {totalReports}件の報告から抽出された体験談
-            </p>
+        <section className="bg-white/5 rounded-3xl border border-white/10">
+          <div className="px-6 py-5 border-b border-white/10">
+            <h2 className="text-2xl font-semibold">note 体験談</h2>
+            <p className="text-sm text-slate-300">投稿本文は note へリンク。個人が特定される情報や DM は収集していません。</p>
           </div>
-
-          <div className="divide-y divide-gray-200">
-            {events.length === 0 ? (
-              <div className="px-6 py-12 text-center text-gray-500">
-                まだ体験談がありません
-              </div>
+          <div className="divide-y divide-white/10">
+            {recentStories.length === 0 ? (
+              <p className="px-6 py-10 text-slate-400">まだ体験談がありません。</p>
             ) : (
-              events.map((event) => {
-                const post = event.raw_posts;
-                const labelColors: Record<string, string> = {
-                  positive: 'bg-green-100 text-green-800',
-                  negative: 'bg-red-100 text-red-800',
-                  neutral: 'bg-gray-100 text-gray-800',
-                  unknown: 'bg-gray-100 text-gray-800',
-                };
-
-                return (
-                  <div key={event.id} className="px-6 py-4">
-                    <div className="flex items-start space-x-4">
-                      <div className="flex-shrink-0">
-                        <span
-                          className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${
-                            labelColors[event.effect_label] || labelColors.unknown
-                          }`}
-                        >
-                          {event.effect_label === 'positive' && '✓ 改善'}
-                          {event.effect_label === 'negative' && '✗ 悪化'}
-                          {event.effect_label === 'neutral' && '− 変化なし'}
-                          {event.effect_label === 'unknown' && '? 不明'}
-                        </span>
-                      </div>
-
-                      <div className="flex-1">
-                        <div className="flex items-center space-x-2 mb-2">
-                          <span className="font-semibold text-gray-900">{post?.username || 'Anonymous'}</span>
-                          <span className="text-gray-400">·</span>
-                          <span className="text-sm text-gray-500">
-                            {post?.posted_at ? new Date(post.posted_at).toLocaleDateString('ja-JP') : '---'}
-                          </span>
-                        </div>
-
-                        <p className="text-gray-900 mb-2">{post?.content || event.action_text}</p>
-
-                        <div className="bg-gray-50 rounded p-3 text-sm">
-                          <div className="mb-1">
-                            <span className="font-medium text-gray-700">行動:</span>{' '}
-                            <span className="text-gray-900">{event.action_text}</span>
-                          </div>
-                          <div>
-                            <span className="font-medium text-gray-700">効果:</span>{' '}
-                            <span className="text-gray-900">{event.effect_text}</span>
-                          </div>
-                        </div>
-
-                        <div className="mt-2 flex items-center space-x-4 text-xs text-gray-500">
-                          <span>信頼度: {Math.round(event.confidence * 100)}%</span>
-                          <span>感情スコア: {event.sentiment_score?.toFixed(2) || 'N/A'}</span>
-                          {post?.url && (
-                            <a
-                              href={post.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-blue-600 hover:underline"
-                            >
-                              元の投稿 →
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
+              recentStories.map((event) => <StoryRow key={event.id} event={event} />)
             )}
           </div>
-        </div>
-
-        {/* Disclaimer */}
-        <div className="mt-8 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-          <p className="text-sm text-yellow-800">
-            <strong>注意:</strong> これらは個人の体験談であり、医学的アドバイスではありません。
-            症状がある場合は、必ず医療専門家にご相談ください。
-          </p>
-        </div>
+        </section>
       </div>
     </div>
   );
 }
 
-export const revalidate = 300; // Revalidate every 5 minutes
+function summarize(events: NoteEvent[]) {
+  if (events.length === 0) return null;
+  const counts = events.reduce(
+    (acc, event) => {
+      if (event.effect_label === 'positive') acc.positive += 1;
+      else if (event.effect_label === 'negative') acc.negative += 1;
+      else acc.neutral += 1;
+      if (!acc.lastReportedAt || new Date(event.raw_posts.posted_at) > new Date(acc.lastReportedAt)) {
+        acc.lastReportedAt = event.raw_posts.posted_at;
+      }
+      return acc;
+    },
+    { positive: 0, negative: 0, neutral: 0, lastReportedAt: events[0].raw_posts.posted_at }
+  );
+  const total = counts.positive + counts.negative + counts.neutral;
+  return {
+    displayName: events[0].method_display_name,
+    total,
+    successRate: total === 0 ? 0 : Math.round((counts.positive / total) * 100),
+    ...counts,
+  };
+}
+
+function StoryRow({ event }: { event: NoteEvent }) {
+  const label = event.effect_label === 'positive' ? '✓ 改善' : event.effect_label === 'negative' ? '✗ 悪化' : '経過観察';
+  return (
+    <article className="px-6 py-6 flex flex-col gap-3">
+      <div className="flex items-center justify-between text-xs text-slate-400">
+        <span>#{event.raw_posts.source_keyword || '未分類'}</span>
+        <span>{label}</span>
+      </div>
+      <p className="text-lg font-semibold">{event.raw_posts.username}</p>
+      <p className="text-slate-200 leading-relaxed">{event.raw_posts.content}</p>
+      <div className="flex items-center justify-between text-xs text-slate-400">
+        <span>{formatDate(event.raw_posts.posted_at)}</span>
+        <a href={event.raw_posts.url} target="_blank" rel="noreferrer" className="text-emerald-300 hover:text-white">
+          元記事を読む →
+        </a>
+      </div>
+    </article>
+  );
+}
+
+function Stat({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <div>
+      <p className="text-xs text-slate-400">{label}</p>
+      <p className={`text-3xl font-semibold mt-2 ${tone ?? 'text-white'}`}>{value}</p>
+    </div>
+  );
+}
+
+function formatDate(value?: string) {
+  if (!value) return '—';
+  return new Date(value).toLocaleDateString('ja-JP');
+}
+
+export const revalidate = 300;
