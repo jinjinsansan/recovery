@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import type { MethodStats } from '@/lib/supabase';
+import type { MethodStats, RawPost } from '@/lib/supabase';
 
 type RecoveryStory = {
   id: string;
@@ -12,14 +12,7 @@ type RecoveryStory = {
   sentiment_score: number;
   confidence: number;
   created_at: string;
-  raw_posts: {
-    id: string;
-    content: string;
-    source_keyword: string;
-    posted_at: string;
-    username: string;
-    url: string;
-  } | null;
+  raw_posts: RawPost | null;
 };
 
 type SymptomInsight = {
@@ -42,6 +35,10 @@ async function getMethodStats(): Promise<MethodStats[]> {
 
   return data ?? [];
 }
+
+type SupabaseStoryRow = Omit<RecoveryStory, 'raw_posts'> & {
+  raw_posts: RawPost | RawPost[] | null;
+};
 
 async function getRecentStories(limit = 8): Promise<RecoveryStory[]> {
   const { data, error } = await supabase
@@ -74,7 +71,15 @@ async function getRecentStories(limit = 8): Promise<RecoveryStory[]> {
     return [];
   }
 
-  return (data ?? []).map((story) => ({ ...story, raw_posts: story.raw_posts ?? null }));
+  const rows = (data ?? []) as SupabaseStoryRow[];
+
+  return rows.map((story) => {
+    const raw = Array.isArray(story.raw_posts) ? story.raw_posts[0] : story.raw_posts;
+    return {
+      ...story,
+      raw_posts: raw ?? null,
+    };
+  });
 }
 
 export default async function HomePage() {
