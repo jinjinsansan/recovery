@@ -211,6 +211,7 @@ def generate_mock_records(
 
 
 def record_to_supabase_dict(record: CollectedPost) -> dict:
+    ingestion_source = infer_ingestion_source(record)
     return {
         "source_keyword": record.source_keyword,
         "platform_id": record.platform_id,
@@ -220,18 +221,28 @@ def record_to_supabase_dict(record: CollectedPost) -> dict:
         "posted_at": record.posted_at.isoformat(),
         "url": record.url,
         "lang": record.lang,
-        "ingestion_source": "collect_samples_cli",
+        "ingestion_source": ingestion_source,
         "metadata": {
             "collector": "scripts.collect_samples",
             "keyword": record.source_keyword,
+            "ingestion_source": ingestion_source,
         },
     }
 
 
+def infer_ingestion_source(record: CollectedPost) -> str:
+    url = (record.url or "").lower()
+    if "note.com" in url:
+        return "note_hashtag"
+    if "x.com" in url or "twitter.com" in url:
+        return "x_search"
+    return "collect_samples_cli"
+
+
 def load_env() -> None:
     dotenv_path = ROOT_DIR / ".env"
-    load_dotenv(dotenv_path=dotenv_path, override=False)
-    load_dotenv(override=False)
+    load_dotenv(dotenv_path=dotenv_path, override=True)
+    load_dotenv(override=True)
 
 
 if __name__ == "__main__":
