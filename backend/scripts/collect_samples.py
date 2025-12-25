@@ -16,7 +16,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from collectors import CollectedPost, TwitterSearchCollector
+from collectors import (
+    CollectedPost,
+    NoteHashtagCollector,
+    TwitterApiCollector,
+    TwitterSearchCollector,
+)
 from supabase_client import SupabaseClient
 
 
@@ -46,9 +51,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["live", "mock"],
+        choices=["live", "legacy", "mock", "note"],
         default="live",
-        help="Data source: call X GraphQL directly or emit synthetic mock data",
+        help=(
+            "Data source: 'live' uses Twitter API v2, 'legacy' uses the deprecated GraphQL scraper, "
+            "'note' scrapes note.com hashtag pages, 'mock' emits synthetic data"
+        ),
     )
     parser.add_argument(
         "--lang",
@@ -60,25 +68,25 @@ def parse_args() -> argparse.Namespace:
         "--bearer-token",
         type=str,
         default=None,
-        help="Override the default public bearer token",
+        help="Override the bearer token (defaults to TWITTER_BEARER_TOKEN or X_BEARER_TOKEN)",
     )
     parser.add_argument(
         "--auth-token",
         type=str,
         default=None,
-        help="X auth_token cookie (required for live mode under current restrictions)",
+        help="X auth_token cookie (legacy GraphQL mode only)",
     )
     parser.add_argument(
         "--csrf-token",
         type=str,
         default=None,
-        help="X ct0 cookie (required when auth-token is provided)",
+        help="X ct0 cookie (required with --auth-token in legacy mode)",
     )
     parser.add_argument(
         "--guest-token",
         type=str,
         default=None,
-        help="Optional guest token override",
+        help="Optional guest token override for legacy mode",
     )
     parser.add_argument(
         "--seed",
@@ -111,7 +119,7 @@ def main() -> None:
             per_keyword_limit=args.max_results,
             seed=args.seed,
         )
-    else:
+    elif args.mode == "legacy":
         collector = TwitterSearchCollector(
             lang=args.lang,
             max_results=args.max_results,
@@ -119,6 +127,18 @@ def main() -> None:
             auth_token=args.auth_token,
             csrf_token=args.csrf_token,
             guest_token=args.guest_token,
+        )
+        records = collector.collect(args.keywords)
+    elif args.mode == "note":
+        collector = NoteHashtagCollector(
+            max_results=args.max_results,
+        )
+        records = collector.collect(args.keywords)
+    else:
+        collector = TwitterApiCollector(
+            lang=args.lang,
+            max_results=args.max_results,
+            bearer_token=args.bearer_token,
         )
         records = collector.collect(args.keywords)
 
