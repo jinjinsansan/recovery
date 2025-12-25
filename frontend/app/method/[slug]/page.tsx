@@ -2,15 +2,18 @@ import { supabase } from '@/lib/supabase';
 import type { MethodStats, MethodEvent, RawPost } from '@/lib/supabase';
 import Link from 'next/link';
 
-async function getMethodDetails(slug: string) {
-  // Get method stats
+type MethodEventWithPost = MethodEvent & { raw_posts: RawPost | null };
+
+async function getMethodDetails(slug: string): Promise<{
+  stats: MethodStats | null;
+  events: MethodEventWithPost[];
+}> {
   const { data: stats } = await supabase
     .from('method_stats')
     .select('*')
     .eq('method_slug', slug)
     .single();
 
-  // Get method events with related posts
   const { data: events } = await supabase
     .from('method_events')
     .select(`
@@ -20,15 +23,21 @@ async function getMethodDetails(slug: string) {
     .eq('method_slug', slug)
     .order('created_at', { ascending: false });
 
-  return { stats, events };
+  return {
+    stats: (stats ?? null) as MethodStats | null,
+    events: (events ?? []).map((event) => ({
+      ...event,
+      raw_posts: event.raw_posts ?? null,
+    })) as MethodEventWithPost[],
+  };
 }
 
 export default async function MethodDetailPage({
   params,
 }: {
-  params: Promise<{ slug: string }>;
+  params: { slug: string };
 }) {
-  const { slug } = await params;
+  const { slug } = params;
   const { stats, events } = await getMethodDetails(slug);
 
   if (!stats) {
@@ -100,12 +109,12 @@ export default async function MethodDetailPage({
           </div>
 
           <div className="divide-y divide-gray-200">
-            {!events || events.length === 0 ? (
+            {events.length === 0 ? (
               <div className="px-6 py-12 text-center text-gray-500">
                 まだ体験談がありません
               </div>
             ) : (
-              events.map((event: any) => {
+              events.map((event) => {
                 const post = event.raw_posts;
                 const labelColors: Record<string, string> = {
                   positive: 'bg-green-100 text-green-800',
