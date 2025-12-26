@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { fetchNoteEvents, dedupeEventsByPost, NoteEvent } from '@/lib/noteInsights';
+import { fetchNoteEvents, buildTagSummaries, TagSummaryItem } from '@/lib/noteInsights';
 import { MENTAL_HEALTH_TAGS, labelFromTagSlug, tagSlugFromLabel } from '@/lib/mentalTags';
 
 export const revalidate = 300;
@@ -8,10 +8,10 @@ export default async function TagPage({ params }: { params: { keyword: string } 
   const slug = decodeURIComponent(params.keyword ?? '');
   const tagLabel = labelFromTagSlug(slug);
   const events = await fetchNoteEvents({ sourceKeyword: tagLabel, limit: 800 });
-  const posts = dedupeEventsByPost(events)
-    .sort((a, b) => new Date(b.raw_posts.posted_at).getTime() - new Date(a.raw_posts.posted_at).getTime())
-    .slice(0, 100);
-  const stats = summarizePosts(posts);
+  const tagSummaryMap = buildTagSummaries(events);
+  const posts = (tagSummaryMap[tagLabel] ?? []).slice(0, 100);
+  const totalAvailable = tagSummaryMap[tagLabel]?.length ?? 0;
+  const latestPostedAt = posts[0]?.postedAt;
 
   return (
     <main className="max-w-4xl mx-auto px-4 py-16 space-y-10 text-slate-900">
@@ -19,17 +19,17 @@ export default async function TagPage({ params }: { params: { keyword: string } 
         <Link href="/" className="text-sm text-slate-500 hover:text-slate-800">
           ← ホームに戻る
         </Link>
-        <p className="text-sm uppercase tracking-[0.3em] text-emerald-600">Hashtag timeline</p>
-        <h1 className="text-4xl font-semibold">{tagLabel} の最新 100 投稿</h1>
+        <p className="text-sm uppercase tracking-[0.3em] text-emerald-600">Symptom summary</p>
+        <h1 className="text-4xl font-semibold">{tagLabel} の改善サマリー一覧</h1>
         <p className="text-slate-600">
-          note で公開されている一次体験から、{tagLabel} のハッシュタグが付いた投稿を新しい順に最大 100 件まで表示します。
+          AI が note の一次体験から「改善した」と報告された方法だけを抽出し、{tagLabel} のタグに絞って最大 100 件まで表示します。
         </p>
       </header>
 
       <section className="grid gap-4 md:grid-cols-3">
-        <StatCard label="収集済みの投稿" value={`${stats.total} 件`} />
-        <StatCard label="改善シェア" value={`${stats.positiveShare}%`} helper={`改善 ${stats.positive} 件`} tone="text-emerald-600" />
-        <StatCard label="悪化シェア" value={`${stats.negativeShare}%`} helper={`悪化 ${stats.negative} 件`} tone="text-rose-600" />
+        <StatCard label="表示中の改善サマリー" value={`${posts.length} 件`} />
+        <StatCard label="このタグの全サマリー" value={`${totalAvailable} 件`} tone="text-emerald-600" />
+        <StatCard label="最新更新日" value={latestPostedAt ? new Date(latestPostedAt).toLocaleDateString('ja-JP') : '—'} />
       </section>
 
       <TagSwitcher activeTag={tagLabel} />
@@ -40,8 +40,8 @@ export default async function TagPage({ params }: { params: { keyword: string } 
         </section>
       ) : (
         <section className="space-y-4">
-          {posts.map((event) => (
-            <TagStoryCard key={event.id} event={event} tagLabel={tagLabel} />
+          {posts.map((item) => (
+            <TagSummaryCard key={item.id} item={item} />
           ))}
         </section>
       )}
@@ -77,57 +77,24 @@ function TagSwitcher({ activeTag }: { activeTag: string }) {
   );
 }
 
-function TagStoryCard({ event, tagLabel }: { event: NoteEvent; tagLabel: string }) {
-  const { label, badgeClass } = effectBadge(event.effect_label);
+function TagSummaryCard({ item }: { item: TagSummaryItem }) {
   return (
     <article className="rounded-3xl border border-slate-200 bg-white p-5 space-y-3">
       <div className="flex items-center justify-between text-xs text-slate-500">
-        <span>{tagLabel}</span>
-        <span className={badgeClass}>{label}</span>
+        <span className="px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">{item.tag}</span>
+        <span className="text-emerald-600 font-semibold">改善</span>
       </div>
       <div>
-        <p className="text-lg font-semibold">{event.method_display_name}</p>
-        <p className="text-sm text-slate-500">{event.raw_posts.username}</p>
+        <p className="text-lg font-semibold">{item.method}</p>
+        <p className="text-sm text-slate-500">{item.username}</p>
       </div>
-      <p className="text-sm text-slate-600 leading-relaxed">{event.raw_posts.content}</p>
+      <p className="text-sm text-slate-600 leading-relaxed line-clamp-4">{item.content}</p>
       <div className="flex items-center justify-between text-xs text-slate-500">
-        <span>{new Date(event.raw_posts.posted_at).toLocaleString('ja-JP')}</span>
-        <a href={event.raw_posts.url} target="_blank" rel="noreferrer" className="text-emerald-600 hover:text-emerald-700">
+        <span>{new Date(item.postedAt).toLocaleString('ja-JP')}</span>
+        <a href={item.url} target="_blank" rel="noreferrer" className="text-emerald-600 hover:text-emerald-700">
           noteを読む →
         </a>
       </div>
     </article>
   );
-}
-
-function summarizePosts(events: NoteEvent[]) {
-  const summary = events.reduce(
-    (acc, event) => {
-      if (event.effect_label === 'positive') acc.positive += 1;
-      else if (event.effect_label === 'negative') acc.negative += 1;
-      else acc.neutral += 1;
-      return acc;
-    },
-    { positive: 0, negative: 0, neutral: 0 }
-  );
-  const total = events.length;
-  return {
-    total,
-    positive: summary.positive,
-    negative: summary.negative,
-    positiveShare: total === 0 ? 0 : Math.round((summary.positive / total) * 100),
-    negativeShare: total === 0 ? 0 : Math.round((summary.negative / total) * 100),
-  };
-}
-
-function effectBadge(effect: NoteEvent['effect_label']) {
-  switch (effect) {
-    case 'positive':
-      return { label: '改善', badgeClass: 'px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100' };
-    case 'negative':
-      return { label: '悪化', badgeClass: 'px-2 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-100' };
-    case 'neutral':
-    default:
-      return { label: '経過観察', badgeClass: 'px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-100' };
-  }
 }

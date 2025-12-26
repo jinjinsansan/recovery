@@ -34,6 +34,16 @@ export type SummaryMetrics = {
   lastUpdated?: string;
 };
 
+export type TagSummaryItem = {
+  id: string;
+  tag: string;
+  method: string;
+  content: string;
+  url: string;
+  postedAt: string;
+  username: string;
+};
+
 type FetchOptions = {
   limit?: number;
   methodSlug?: string;
@@ -183,6 +193,30 @@ export function buildSymptomInsights(events: NoteEvent[]): SymptomInsight[] {
     .sort((a, b) => b.totalStories - a.totalStories);
 }
 
+export function buildTagSummaries(events: NoteEvent[]): Record<string, TagSummaryItem[]> {
+  const positiveEvents = dedupeEventsByPost(events).filter((event) => event.effect_label === 'positive');
+  const grouped = new Map<string, TagSummaryItem[]>();
+  for (const event of positiveEvents) {
+    const tag = normalizeTag(event.raw_posts?.source_keyword);
+    if (!grouped.has(tag)) {
+      grouped.set(tag, []);
+    }
+    grouped.get(tag)!.push({
+      id: event.id,
+      tag,
+      method: event.method_display_name,
+      content: event.raw_posts?.content ?? '',
+      url: event.raw_posts?.url ?? '#',
+      postedAt: event.raw_posts?.posted_at ?? event.created_at,
+      username: event.raw_posts?.username ?? 'noteユーザー',
+    });
+  }
+  for (const items of grouped.values()) {
+    items.sort((a, b) => new Date(b.postedAt).getTime() - new Date(a.postedAt).getTime());
+  }
+  return Object.fromEntries(grouped);
+}
+
 export function dedupeEventsByPost(events: NoteEvent[]): NoteEvent[] {
   const seen = new Set<string>();
   const unique: NoteEvent[] = [];
@@ -194,4 +228,9 @@ export function dedupeEventsByPost(events: NoteEvent[]): NoteEvent[] {
     unique.push(event);
   }
   return unique;
+}
+
+function normalizeTag(keyword?: string | null) {
+  if (!keyword) return '#未分類';
+  return keyword.startsWith('#') ? keyword : `#${keyword}`;
 }
