@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, TypeVar
 
 import httpx
 
@@ -47,6 +47,7 @@ class SupabaseClient:
         ingestion_source: str | None = None,
         url_contains: str | None = None,
         collected_after: Optional[str] = None,
+        source_keyword: str | None = None,
     ) -> List[Dict[str, Any]]:
         params: Dict[str, Any] = {
             "select": "*",
@@ -59,6 +60,8 @@ class SupabaseClient:
             params["url"] = f"ilike.*{url_contains}*"
         if collected_after:
             params["collected_at"] = f"gt.{collected_after}"
+        if source_keyword:
+            params["source_keyword"] = f"eq.{source_keyword}"
 
         resp = self._client.get(
             f"{self.rest_url}/raw_posts",
@@ -71,18 +74,21 @@ class SupabaseClient:
     def fetch_method_event_post_ids(self, post_ids: Sequence[str]) -> Set[str]:
         if not post_ids:
             return set()
-        filter_values = ",".join(post_ids)
-        params = {
-            "select": "post_id",
-            "post_id": f"in.({filter_values})",
-        }
-        resp = self._client.get(
-            f"{self.rest_url}/method_events",
-            params=params,
-            headers=self._headers(),
-        )
-        resp.raise_for_status()
-        return {row["post_id"] for row in resp.json() if row.get("post_id")}
+        seen: Set[str] = set()
+        for chunk in _chunk(post_ids, size=100):
+            filter_values = ",".join(chunk)
+            params = {
+                "select": "post_id",
+                "post_id": f"in.({filter_values})",
+            }
+            resp = self._client.get(
+                f"{self.rest_url}/method_events",
+                params=params,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            seen.update(row["post_id"] for row in resp.json() if row.get("post_id"))
+        return seen
 
     def insert_method_events(self, records: Sequence[dict]) -> int:
         if not records:
@@ -148,8 +154,11 @@ class SupabaseClient:
         return headers
 
 
-def _chunk(items: Sequence[dict], size: int) -> Iterable[List[dict]]:
-    bucket: List[dict] = []
+T = TypeVar("T")
+
+
+def _chunk(items: Sequence[T], size: int) -> Iterable[List[T]]:
+    bucket: List[T] = []
     for record in items:
         bucket.append(record)
         if len(bucket) >= size:

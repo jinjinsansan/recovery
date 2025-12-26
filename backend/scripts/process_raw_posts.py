@@ -53,6 +53,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Analyze posts but skip Supabase writes",
     )
+    parser.add_argument(
+        "--source-keyword",
+        type=str,
+        default=None,
+        help="Optional raw_posts.source_keyword filter (e.g., #うつ)",
+    )
     return parser.parse_args()
 
 
@@ -73,6 +79,7 @@ def main() -> None:
         ingestion_source=args.ingestion_source,
         url_contains=args.url_domain,
         collected_after=collected_after,
+        source_keyword=args.source_keyword,
     )
 
     if not raw_posts:
